@@ -15,6 +15,12 @@ from PIL import Image
 import numpy as np
 import random
 
+import logging
+
+# Setup basic logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
 import gradio as gr
 
 # global variable
@@ -87,9 +93,31 @@ def get_example():
     return case
 
 def run_example(img_file):
-    return generate_image(img_file, 25, 3, 23, 2)
+    return generate_image(img_file, 25, 3, 23, 2, "average")
 
-def generate_image(image_path, num_steps, guidance_scale, seed, num_images, progress=gr.Progress(track_tqdm=True)):
+
+def average_embeddings(embeddings, method="average"):
+    """
+    Averages embeddings based on the specified method.
+    """
+    if method == "average":
+        # Straight Average (as previously implemented)
+        return torch.mean(torch.stack(embeddings), dim=0)
+    elif method == "median":
+        # Median of Embeddings
+        return torch.median(torch.stack(embeddings), dim=0).values
+    elif method == "max_pooling":
+        # Max Pooling
+        return torch.max(embeddings_stack, dim=0).values
+    elif method == "min_pooling":
+        # Min Pooling
+        return torch.min(embeddings_stack, dim=0).values
+    else:
+        raise ValueError("Unsupported averaging method.")
+    
+    return None  # Fallback
+
+def generate_image(image_path, num_steps, guidance_scale, seed, num_images, average_method, progress=gr.Progress(track_tqdm=True)):
 
     if image_path is None:
         raise gr.Error(f"Cannot find any input face image! Please upload a face image.")
@@ -102,10 +130,14 @@ def generate_image(image_path, num_steps, guidance_scale, seed, num_images, prog
     if len(faces) == 0:
         raise gr.Error(f"Face detection failed! Please try with another image.")
     
-    faces = sorted(faces, key=lambda x:(x['bbox'][2]-x['bbox'][0])*(x['bbox'][3]-x['bbox'][1]))[-1]  # select largest face (if more than one detected)
-    id_emb = torch.tensor(faces['embedding'], dtype=dtype)[None].to(device)
-    id_emb = id_emb/torch.norm(id_emb, dim=1, keepdim=True)   # normalize embedding
-    id_emb = project_face_embs(pipeline, id_emb)    # pass throught the encoder
+    embeddings = [torch.tensor(face['embedding'], dtype=dtype).to(device) for face in faces]
+    avg_embedding = average_embeddings(embeddings, method=average_method)
+    
+    # Normalize the averaged embedding
+    avg_embedding = avg_embedding / torch.norm(avg_embedding, dim=0, keepdim=True)
+    avg_embedding = avg_embedding.unsqueeze(0)  # Ensure it has the batch dimension
+    id_emb = project_face_embs(pipeline, avg_embedding)
+
                     
     generator = torch.Generator(device=device).manual_seed(seed)
     
@@ -173,19 +205,19 @@ with gr.Blocks(css=css) as demo:
                     minimum=20,
                     maximum=100,
                     step=1,
-                    value=25,
+                    value=30,
                 )
                 guidance_scale = gr.Slider(
                     label="Guidance scale",
                     minimum=0.1,
                     maximum=10.0,
                     step=0.1,
-                    value=3,
+                    value=2.7,
                 )
                 num_images = gr.Slider(
                     label="Number of output images",
                     minimum=1,
-                    maximum=4,
+                    maximum=6,
                     step=1,
                     value=2,
                 )
@@ -198,6 +230,14 @@ with gr.Blocks(css=css) as demo:
                 )
                 randomize_seed = gr.Checkbox(label="Randomize seed", value=True)
 
+                average_method = gr.Radio(
+                    label="Embedding Averaging Method",
+                    choices=["average", "median", "max_pooling", "min_pooling"],
+                    value="average",
+                )
+    
+   
+
         with gr.Column():
             gallery = gr.Gallery(label="Generated Images")
 
@@ -209,9 +249,9 @@ with gr.Blocks(css=css) as demo:
             api_name=False,
         ).then(
             fn=generate_image,
-            inputs=[img_file, num_steps, guidance_scale, seed, num_images],
+            inputs=[img_file, num_steps, guidance_scale, seed, num_images, average_method],
             outputs=[gallery]
-        )
+        )       
     
     
     gr.Examples(
