@@ -180,7 +180,8 @@ def generate_image(image_path, num_steps, guidance_scale, seed, num_images, aver
         num_inference_steps=num_steps,
         guidance_scale=guidance_scale, 
         num_images_per_prompt=num_images,
-        generator=generator
+        generator=generator,
+        negative_prompt="ugly, deformed, crossed eyes"
     ).images
 
     return images
