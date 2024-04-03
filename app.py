@@ -15,8 +15,13 @@ from PIL import Image
 import numpy as np
 import random
 
+import logging
+
+# Setup basic logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
 import gradio as gr
-import spaces
 
 # global variable
 MAX_SEED = np.iinfo(np.int32).max
@@ -88,26 +93,88 @@ def get_example():
     return case
 
 def run_example(img_file):
-    return generate_image(img_file, 25, 3, 23, 2)
+    return generate_image(img_file, 25, 3, 23, 2, "average")
 
-@spaces.GPU
-def generate_image(image_path, num_steps, guidance_scale, seed, num_images, progress=gr.Progress(track_tqdm=True)):
 
-    if image_path is None:
-        raise gr.Error(f"Cannot find any input face image! Please upload a face image.")
+def average_embeddings(embeddings, method="average"):
+    """
+    Averages embeddings based on the specified method.
+    """
+    if method == "average":
+        # Straight Average (as previously implemented)
+        return torch.mean(torch.stack(embeddings), dim=0)
+    elif method == "median":
+        # Median of Embeddings
+        return torch.median(torch.stack(embeddings), dim=0).values
+    elif method == "max_pooling":
+        # Max Pooling
+        return torch.max(torch.stack(embeddings), dim=0).values
+    elif method == "min_pooling":
+        # Min Pooling
+        return torch.min(torch.stack(embeddings), dim=0).values
+    else:
+        raise ValueError("Unsupported averaging method.")
     
-    img = np.array(Image.open(image_path))[:,:,::-1]
+    return None  # Fallback
 
-    # Face detection and ID-embedding extraction
-    faces = app.get(img)
+def remove_outliers(embeddings, n_outliers):
+    """
+    Removes the n embeddings farthest from the centroid of the embeddings.
     
-    if len(faces) == 0:
-        raise gr.Error(f"Face detection failed! Please try with another image.")
+    Args:
+        embeddings (list of torch.Tensor): The embeddings from which to remove outliers.
+        n_outliers (int): The number of outliers to remove.
     
-    faces = sorted(faces, key=lambda x:(x['bbox'][2]-x['bbox'][0])*(x['bbox'][3]-x['bbox'][1]))[-1]  # select largest face (if more than one detected)
-    id_emb = torch.tensor(faces['embedding'], dtype=dtype)[None].to(device)
-    id_emb = id_emb/torch.norm(id_emb, dim=1, keepdim=True)   # normalize embedding
-    id_emb = project_face_embs(pipeline, id_emb)    # pass throught the encoder
+    Returns:
+        list of torch.Tensor: The embeddings with outliers removed.
+    """
+    if n_outliers == 0 or n_outliers >= len(embeddings):
+        # No outliers to remove, or trying to remove too many
+        return embeddings
+
+    # Calculate the centroid of the embeddings
+    centroid = torch.mean(torch.stack(embeddings), dim=0)
+    
+    # Calculate the distance of each embedding from the centroid
+    distances = [torch.norm(e - centroid, p=2).item() for e in embeddings]
+    
+    # Identify the indices of the n farthest embeddings
+    outlier_indices = sorted(range(len(distances)), key=lambda i: distances[i], reverse=True)[:n_outliers]
+    
+    # Remove the outliers
+    embeddings = [e for i, e in enumerate(embeddings) if i not in outlier_indices]
+    
+    return embeddings
+
+def generate_image(image_paths, num_steps, guidance_scale, seed, num_images, average_method, n_outliers, negative_prompt, progress=gr.Progress(track_tqdm=True)):
+    all_embeddings = []
+    for image_data in image_paths:
+        if image_data is None:
+            continue
+        
+        image_path_or_data = image_data[0]
+
+        # Open the image using PIL and ensure it is in RGB format
+        img = Image.open(image_path_or_data).convert('RGB')
+        img = np.array(img)[:, :, ::-1]  # Convert to BGR format if necessary for your model
+
+        faces = app.get(img)
+        
+        if len(faces) > 0:
+            embeddings = [torch.tensor(face['embedding'], dtype=dtype).to(device) for face in faces]
+            all_embeddings.extend(embeddings)
+
+
+    if len(all_embeddings) == 0:
+        raise gr.Error("No faces detected in the uploaded images. Please upload different images.")
+
+    all_embeddings = remove_outliers(all_embeddings, n_outliers)
+    avg_embedding = average_embeddings(all_embeddings, method=average_method)
+    
+    # Normalize the averaged embedding
+    avg_embedding = avg_embedding / torch.norm(avg_embedding, dim=0, keepdim=True)
+    avg_embedding = avg_embedding.unsqueeze(0)  # Ensure it has the batch dimension
+    id_emb = project_face_embs(pipeline, avg_embedding)
                     
     generator = torch.Generator(device=device).manual_seed(seed)
     
@@ -117,10 +184,12 @@ def generate_image(image_path, num_steps, guidance_scale, seed, num_images, prog
         num_inference_steps=num_steps,
         guidance_scale=guidance_scale, 
         num_images_per_prompt=num_images,
-        generator=generator
+        generator=generator,
+        negative_prompt=negative_prompt
     ).images
 
     return images
+
 
 ### Description
 title = r"""
@@ -165,7 +234,9 @@ with gr.Blocks(css=css) as demo:
         with gr.Column():
             
             # upload face image
-            img_file = gr.Image(label="Upload a photo with a face", type="filepath")
+            # img_file = gr.Image(label="Upload a photo with a face", type="filepath")
+            img_files = gr.Gallery(label="Upload photos with faces", show_label=True)
+
             
             submit = gr.Button("Submit", variant="primary")
             
@@ -175,19 +246,19 @@ with gr.Blocks(css=css) as demo:
                     minimum=20,
                     maximum=100,
                     step=1,
-                    value=25,
+                    value=30,
                 )
                 guidance_scale = gr.Slider(
                     label="Guidance scale",
                     minimum=0.1,
                     maximum=10.0,
                     step=0.1,
-                    value=3,
+                    value=2.7,
                 )
                 num_images = gr.Slider(
                     label="Number of output images",
                     minimum=1,
-                    maximum=4,
+                    maximum=6,
                     step=1,
                     value=2,
                 )
@@ -200,9 +271,32 @@ with gr.Blocks(css=css) as demo:
                 )
                 randomize_seed = gr.Checkbox(label="Randomize seed", value=True)
 
+                average_method = gr.Radio(
+                    label="Embedding Averaging Method",
+                    choices=["average", "median", "max_pooling", "min_pooling"],
+                    value="average",
+                )
+
+                n_outliers = gr.Slider(
+                    label="Number of outliers to remove",
+                    minimum=0,
+                    maximum=10,  
+                    step=1,
+                    value=0,
+                )
+
+                negative_prompt = gr.Textbox(
+                    label="Negative Prompt",
+                    value="ugly, deformed, crossed eyes, sunglasses", # Default value or leave empty
+                    placeholder="Enter negative prompts separated by commas",
+                )
+
+    
+   
+
         with gr.Column():
             gallery = gr.Gallery(label="Generated Images")
-
+ 
         submit.click(
             fn=randomize_seed_fn,
             inputs=[seed, randomize_seed],
@@ -211,19 +305,19 @@ with gr.Blocks(css=css) as demo:
             api_name=False,
         ).then(
             fn=generate_image,
-            inputs=[img_file, num_steps, guidance_scale, seed, num_images],
+            inputs=[img_files, num_steps, guidance_scale, seed, num_images, average_method, n_outliers, negative_prompt],
             outputs=[gallery]
-        )
+        )       
     
     
-    gr.Examples(
-        examples=get_example(),
-        inputs=[img_file],
-        run_on_click=True,
-        fn=run_example,
-        outputs=[gallery],
-    )
+    # gr.Examples(
+    #     examples=get_example(),
+    #     inputs=[img_files],
+    #     run_on_click=True,
+    #     fn=run_example,
+    #     outputs=[gallery],
+    # )
     
     gr.Markdown(Footer)
 
-demo.launch()
+demo.launch(share=True)
