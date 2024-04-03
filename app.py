@@ -117,7 +117,37 @@ def average_embeddings(embeddings, method="average"):
     
     return None  # Fallback
 
-def generate_image(image_path, num_steps, guidance_scale, seed, num_images, average_method, progress=gr.Progress(track_tqdm=True)):
+def remove_outliers(embeddings, n_outliers):
+    """
+    Removes the n embeddings farthest from the centroid of the embeddings.
+    
+    Args:
+        embeddings (list of torch.Tensor): The embeddings from which to remove outliers.
+        n_outliers (int): The number of outliers to remove.
+    
+    Returns:
+        list of torch.Tensor: The embeddings with outliers removed.
+    """
+    if n_outliers == 0 or n_outliers >= len(embeddings):
+        # No outliers to remove, or trying to remove too many
+        return embeddings
+
+    # Calculate the centroid of the embeddings
+    centroid = torch.mean(torch.stack(embeddings), dim=0)
+    
+    # Calculate the distance of each embedding from the centroid
+    distances = [torch.norm(e - centroid, p=2).item() for e in embeddings]
+    
+    # Identify the indices of the n farthest embeddings
+    outlier_indices = sorted(range(len(distances)), key=lambda i: distances[i], reverse=True)[:n_outliers]
+    
+    # Remove the outliers
+    embeddings = [e for i, e in enumerate(embeddings) if i not in outlier_indices]
+    
+    return embeddings
+
+
+def generate_image(image_path, num_steps, guidance_scale, seed, num_images, average_method, n_outliers, progress=gr.Progress(track_tqdm=True)):
 
     if image_path is None:
         raise gr.Error(f"Cannot find any input face image! Please upload a face image.")
@@ -131,6 +161,9 @@ def generate_image(image_path, num_steps, guidance_scale, seed, num_images, aver
         raise gr.Error(f"Face detection failed! Please try with another image.")
     
     embeddings = [torch.tensor(face['embedding'], dtype=dtype).to(device) for face in faces]
+
+    embeddings = remove_outliers(embeddings, n_outliers)
+
     avg_embedding = average_embeddings(embeddings, method=average_method)
     
     # Normalize the averaged embedding
@@ -235,6 +268,15 @@ with gr.Blocks(css=css) as demo:
                     choices=["average", "median", "max_pooling", "min_pooling"],
                     value="average",
                 )
+
+                n_outliers = gr.Slider(
+                    label="Number of outliers to remove",
+                    minimum=0,
+                    maximum=10,  
+                    step=1,
+                    value=0,
+                )
+
     
    
 
@@ -249,7 +291,7 @@ with gr.Blocks(css=css) as demo:
             api_name=False,
         ).then(
             fn=generate_image,
-            inputs=[img_file, num_steps, guidance_scale, seed, num_images, average_method],
+            inputs=[img_file, num_steps, guidance_scale, seed, num_images, average_method, n_outliers],
             outputs=[gallery]
         )       
     
