@@ -14,11 +14,30 @@ from insightface.app import FaceAnalysis
 from PIL import Image
 import numpy as np
 import random
+import os
+import datetime
 
 import logging
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+import csv
+
+def save_embeddings_to_csv(embeddings, filename):
+    """
+    Saves embeddings to a CSV file.
+
+    Args:
+        embeddings (torch.Tensor): The embeddings tensor to save.
+        filename (str): The filename for the CSV file.
+    """
+    with open(filename, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        # Convert each embedding to a list and write to the CSV file
+        for embedding in embeddings:
+            writer.writerow(embedding.tolist())
 
 
 import gradio as gr
@@ -100,22 +119,138 @@ def average_embeddings(embeddings, method="average"):
     """
     Averages embeddings based on the specified method.
     """
+
+     # Stack the embeddings into a single tensor
+    embeddings_stack = torch.stack(embeddings)
+
+    # log number of faces being averaged
+    logging.info(f"Number of faces being averaged: {len(embeddings)}")
+
+    # Generate a timestamp for file naming
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    embeddings_filename = f"./embeddings_{timestamp}_in.csv"
+    averaged_filename = f"./embeddings_{timestamp}_out.csv"
+    
+    # Save all incoming face embeddings
+    save_embeddings_to_csv(embeddings_stack, embeddings_filename)
+    logging.info(f"All embeddings saved to {embeddings_filename}")
+
     if method == "average":
         # Straight Average (as previously implemented)
-        return torch.mean(torch.stack(embeddings), dim=0)
+        averaged_embedding = torch.mean(embeddings_stack, dim=0)
     elif method == "median":
         # Median of Embeddings
-        return torch.median(torch.stack(embeddings), dim=0).values
+        averaged_embedding = torch.median(embeddings_stack, dim=0).values
+    elif method == "trimmed_mean":
+        # Calculate the trimmed mean for each feature
+        lower_bound, upper_bound = int(0.15 * len(embeddings)), int(0.85 * len(embeddings))
+        sorted_embeddings = embeddings_stack.sort(dim=0).values
+        trimmed_embeddings = sorted_embeddings[lower_bound:upper_bound, :]
+        averaged_embedding = torch.mean(trimmed_embeddings, dim=0)
     elif method == "max_pooling":
         # Max Pooling
-        return torch.max(torch.stack(embeddings), dim=0).values
+        averaged_embedding = torch.max(embeddings_stack, dim=0).values
     elif method == "min_pooling":
         # Min Pooling
-        return torch.min(torch.stack(embeddings), dim=0).values
+        averaged_embedding = torch.min(embeddings_stack, dim=0).values
+    elif method == "rounded_mode":
+        # Initialize an empty tensor to hold the mode values for each dimension
+        mode_embeddings = torch.zeros_like(embeddings_stack[0])
+
+        # Iterate over each dimension
+        for dim in range(embeddings_stack.size(1)):
+            # Extract the current dimension across all embeddings
+            current_dim_values = embeddings_stack[:, dim]
+            # Round the values in the current dimension to 2 decimal places
+            rounded_dim_values = torch.round(current_dim_values * 100) / 100
+            # Calculate the mode of the rounded values
+            values, counts = rounded_dim_values.unique(return_counts=True)
+            mode_value = values[counts.argmax()]
+            # Assign the mode value to the corresponding dimension in the result tensor
+            mode_embeddings[dim] = mode_value
+
+        averaged_embedding = mode_embeddings
+
+    elif method == "rounded_mode_averaging":
+        # Initialize an empty tensor to hold the averaged values for each dimension
+        averaged_mode_embeddings = torch.zeros_like(embeddings_stack[0])
+        
+        # Iterate over each dimension
+        for dim in range(embeddings_stack.size(1)):
+            # Extract the current dimension across all embeddings
+            current_dim_values = embeddings_stack[:, dim]
+            # Round the values in the current dimension to 2 decimal places
+            rounded_dim_values = torch.round(current_dim_values * 100) / 100
+            # Calculate the mode of the rounded values
+            mode_value, mode_count = rounded_dim_values.mode()
+            # Find the indices of embeddings that contributed to the mode in the current dimension
+            contributing_indices = (rounded_dim_values == mode_value).nonzero(as_tuple=True)[0]
+            # Use these indices to select the original, full-precision values that contributed to the mode
+            contributing_values = current_dim_values[contributing_indices]
+            # Average these contributing values
+            averaged_mode_value = torch.mean(contributing_values)
+            # Assign the averaged value to the corresponding dimension in the result tensor
+            averaged_mode_embeddings[dim] = averaged_mode_value
+        
+        averaged_embedding = averaged_mode_embeddings
+    elif method == "ensemble_average":
+        # Compute individual averages: mean, median, and trimmed mean
+        mean_embedding = torch.mean(embeddings_stack, dim=0)
+        median_embedding = torch.median(embeddings_stack, dim=0).values
+        
+        # For trimmed mean, assuming the same 15% trim as before
+        lower_bound, upper_bound = int(0.15 * len(embeddings)), int(0.85 * len(embeddings))
+        sorted_embeddings = embeddings_stack.sort(dim=0).values
+        trimmed_embeddings = sorted_embeddings[lower_bound:upper_bound, :]
+        trimmed_mean_embedding = torch.mean(trimmed_embeddings, dim=0)
+        
+        # Stack the individual averages and then compute the final ensemble average
+        all_averages = torch.stack([mean_embedding, median_embedding, trimmed_mean_embedding])
+        
+        # Choose here if you want the mean or median of the averages
+        # For mean of averages:
+        averaged_embedding = torch.mean(all_averages, dim=0)
+        # For median of averages (uncomment the following line if you prefer median):
+        # averaged_embedding = torch.median(all_averages, dim=0).values
+    elif method == "ensemble_median":
+        # Compute individual averages: mean, median, and trimmed mean
+        mean_embedding = torch.mean(embeddings_stack, dim=0)
+        median_embedding = torch.median(embeddings_stack, dim=0).values
+        
+        # For trimmed mean, assuming the same 15% trim as before
+        lower_bound, upper_bound = int(0.15 * len(embeddings)), int(0.85 * len(embeddings))
+        sorted_embeddings = embeddings_stack.sort(dim=0).values
+        trimmed_embeddings = sorted_embeddings[lower_bound:upper_bound, :]
+        trimmed_mean_embedding = torch.mean(trimmed_embeddings, dim=0)
+        
+        # Stack the individual averages and then compute the final ensemble average
+        all_averages = torch.stack([mean_embedding, median_embedding, trimmed_mean_embedding])
+        
+        # Choose here if you want the mean or median of the averages
+        # For mean of averages:
+        # averaged_embedding = torch.mean(all_averages, dim=0)
+        # For median of averages (uncomment the following line if you prefer median):
+        averaged_embedding = torch.median(all_averages, dim=0).values
+    elif method == "random_sampling":
+        # Initialize an empty tensor for the randomly sampled embedding
+        randomly_sampled_embedding = torch.empty(embeddings_stack.shape[1], dtype=embeddings_stack.dtype).to(embeddings_stack.device)
+        
+        # For each dimension, randomly select an embedding and take its value for that dimension
+        for dim in range(embeddings_stack.shape[1]):  # Iterate over each dimension
+            random_index = torch.randint(0, embeddings_stack.shape[0], (1,)).item()  # Randomly select an embedding index
+            randomly_sampled_embedding[dim] = embeddings_stack[random_index, dim]  # Assign the randomly selected value
+        
+        # Use the randomly sampled embedding as the averaged embedding
+        averaged_embedding = randomly_sampled_embedding
+
     else:
         raise ValueError("Unsupported averaging method.")
     
-    return None  # Fallback
+    # Save the averaged embedding as CSV
+    save_embeddings_to_csv(averaged_embedding.unsqueeze(0), averaged_filename)  # Unsqueeze to make it 2D for consistency
+    logging.info(f"Averaged embedding saved to {averaged_filename}")
+    
+    return averaged_embedding
 
 def remove_outliers(embeddings, n_outliers):
     """
@@ -273,8 +408,8 @@ with gr.Blocks(css=css) as demo:
 
                 average_method = gr.Radio(
                     label="Embedding Averaging Method",
-                    choices=["average", "median", "max_pooling", "min_pooling"],
-                    value="average",
+                    choices=["average", "median", "trimmed_mean", "ensemble_average", "ensemble_median", "max_pooling", "min_pooling", "rounded_mode", "rounded_mode_averaging", "random_sampling"],
+                    value="median",
                 )
 
                 n_outliers = gr.Slider(
