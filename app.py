@@ -108,10 +108,10 @@ def average_embeddings(embeddings, method="average"):
         return torch.median(torch.stack(embeddings), dim=0).values
     elif method == "max_pooling":
         # Max Pooling
-        return torch.max(embeddings_stack, dim=0).values
+        return torch.max(torch.stack(embeddings), dim=0).values
     elif method == "min_pooling":
         # Min Pooling
-        return torch.min(embeddings_stack, dim=0).values
+        return torch.min(torch.stack(embeddings), dim=0).values
     else:
         raise ValueError("Unsupported averaging method.")
     
