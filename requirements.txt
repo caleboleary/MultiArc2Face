@@ -6,4 +6,4 @@ transformers==4.34.1
 accelerate
 insightface
 onnxruntime-gpu
-gradio=4.25.0
+gradio==4.25.0
