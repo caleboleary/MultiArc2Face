@@ -5,7 +5,11 @@ from diffusers import (
     StableDiffusionPipeline,
     UNet2DConditionModel,
     DPMSolverMultistepScheduler,
+    AutoPipelineForImage2Image,
+    AutoPipelineForInpainting
 )
+
+from diffusers.utils import load_image
 
 from arc2face import CLIPTextModelWrapper, project_face_embs
 
@@ -82,6 +86,27 @@ pipeline = StableDiffusionPipeline.from_pretrained(
     )
 pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
 pipeline = pipeline.to(device)
+
+
+pipeline_img2img = AutoPipelineForImage2Image.from_pretrained( 
+        base_model,
+        text_encoder=encoder,
+        unet=unet,
+        torch_dtype=dtype,
+        safety_checker=None
+)
+pipeline_img2img.scheduler = DPMSolverMultistepScheduler.from_config(pipeline_img2img.scheduler.config)
+pipeline_img2img.to(device)
+
+pipeline_inpainting = AutoPipelineForInpainting.from_pretrained(
+        base_model,
+        text_encoder=encoder,
+        unet=unet,
+        torch_dtype=dtype,
+        safety_checker=None
+)
+pipeline_inpainting.scheduler = DPMSolverMultistepScheduler.from_config(pipeline_inpainting.scheduler.config)
+pipeline_inpainting.to(device)
 
 def randomize_seed_fn(seed: int, randomize_seed: bool) -> int:
     if randomize_seed:
@@ -281,7 +306,33 @@ def remove_outliers(embeddings, n_outliers):
     
     return embeddings
 
-def generate_image(image_paths, num_steps, guidance_scale, seed, num_images, average_method, n_outliers, negative_prompt, progress=gr.Progress(track_tqdm=True)):
+def create_face_mask(image): 
+    img = Image.open(image).convert('RGB')
+    img = np.array(img)[:, :, ::-1]  # Convert to BGR format if necessary for your model
+    faces = app.get(img)
+    
+    if len(faces) > 0:
+        # Calculate the area of the bounding box for each face and select the largest face
+        largest_face = max(faces, key=lambda f: (f['bbox'][2] - f['bbox'][0]) * (f['bbox'][3] - f['bbox'][1]))
+        bbox = largest_face['bbox']
+        
+        # Create a black image with the same size as the input image
+        mask = np.zeros_like(img)
+        
+        # Set the region of the face to white in the mask (note: bbox values need to be integers)
+        mask[int(bbox[1]):int(bbox[3]), int(bbox[0]):int(bbox[2])] = 255
+        
+        # Convert the mask to PIL Image format
+        mask = Image.fromarray(mask[:, :, ::-1])  # Convert back to RGB format if necessary
+        
+        return mask
+    else:
+        return None
+
+
+
+def generate_image(initial_image_path, image_paths, num_steps, guidance_scale, seed, num_images, average_method, n_outliers, negative_prompt, stren, face_only, progress=gr.Progress(track_tqdm=True)):
+
     all_embeddings = []
     for image_data in image_paths:
         if image_data is None:
@@ -314,14 +365,63 @@ def generate_image(image_paths, num_steps, guidance_scale, seed, num_images, ave
     generator = torch.Generator(device=device).manual_seed(seed)
     
     print("Start inference...")        
-    images = pipeline(
-        prompt_embeds=id_emb,
-        num_inference_steps=num_steps,
-        guidance_scale=guidance_scale, 
-        num_images_per_prompt=num_images,
-        generator=generator,
-        negative_prompt=negative_prompt
-    ).images
+    
+    if initial_image_path is not None and face_only:
+        initial_image = load_image(initial_image_path)
+        mask = create_face_mask(initial_image_path)
+
+        if initial_image is None:
+            raise ValueError("Failed to load initial image. Please check the image path and format.")
+
+        if mask is None:
+            raise ValueError("Failed to create face mask. Please check the image path and format.")
+
+        logging.info(f"Initial image loaded successfully with size {initial_image.size}")
+
+        initial_image = [initial_image] * num_images
+
+        images = pipeline_inpainting(
+            strength=(stren / 100),
+            prompt_embeds=id_emb,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale, 
+            num_images_per_prompt=num_images,
+            generator=generator,
+            image=initial_image,
+            mask_image=mask,
+            negative_prompt=negative_prompt,
+            padding_mask_crop=32
+        ).images
+    elif initial_image_path is not None:
+        initial_image = load_image(initial_image_path)
+        
+        if initial_image is None:
+            raise ValueError("Failed to load initial image. Please check the image path and format.")
+
+        logging.info(f"Initial image loaded successfully with size {initial_image.size}")
+
+        initial_image = [initial_image] * num_images
+
+        images = pipeline_img2img(
+            strength=(stren / 100),
+            prompt_embeds=id_emb,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale, 
+            num_images_per_prompt=num_images,
+            generator=generator,
+            image=initial_image,
+            negative_prompt=negative_prompt
+        ).images
+    else:
+        images = pipeline(
+            prompt_embeds=id_emb,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale, 
+            num_images_per_prompt=num_images,
+            generator=generator,
+            negative_prompt=negative_prompt
+        ).images
+
 
     return images
 
@@ -372,7 +472,8 @@ with gr.Blocks(css=css) as demo:
             # img_file = gr.Image(label="Upload a photo with a face", type="filepath")
             img_files = gr.Gallery(label="Upload photos with faces", show_label=True)
 
-            
+            img2img_file = gr.Image(label="Upload a photo for initial image (optional for img2img)", type="filepath")
+
             submit = gr.Button("Submit", variant="primary")
             
             with gr.Accordion(open=False, label="Advanced Options"):
@@ -426,6 +527,16 @@ with gr.Blocks(css=css) as demo:
                     placeholder="Enter negative prompts separated by commas",
                 )
 
+                stren = gr.Slider(
+                    label="Strength for img2img (only used if img2img file is present)",
+                    minimum=0,
+                    maximum=100,
+                    step=1,
+                    value=50,
+                )
+
+                face_only = gr.Checkbox(label="Face Only Inpainting", value=False)
+
     
    
 
@@ -440,18 +551,10 @@ with gr.Blocks(css=css) as demo:
             api_name=False,
         ).then(
             fn=generate_image,
-            inputs=[img_files, num_steps, guidance_scale, seed, num_images, average_method, n_outliers, negative_prompt],
+            inputs=[img2img_file, img_files, num_steps, guidance_scale, seed, num_images, average_method, n_outliers, negative_prompt, stren, face_only],
             outputs=[gallery]
         )       
     
-    
-    # gr.Examples(
-    #     examples=get_example(),
-    #     inputs=[img_files],
-    #     run_on_click=True,
-    #     fn=run_example,
-    #     outputs=[gallery],
-    # )
     
     gr.Markdown(Footer)
 
