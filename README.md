@@ -26,4 +26,4 @@ To run in google colab:
 
 Sample using median option, non-cherry picked
 
-![sample of different face counts](assets.sample.png)
+![sample of different face counts](assets/sample.png)
