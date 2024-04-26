@@ -20,7 +20,7 @@ To run in google colab:
 
 ```
 %cd /content
-!GIT_LFS_SKIP_SMUDGE=1 git clone -b dev https://github.com/caleboleary/MultiArc2Face
+!GIT_LFS_SKIP_SMUDGE=1 git clone -b main https://github.com/caleboleary/MultiArc2Face
 %cd /content/MultiArc2Face
 
 !wget https://huggingface.co/camenduru/Arc2Face/resolve/main/freddie.png -O /content/MultiArc2Face/assets/examples/freddie.png
