@@ -29,7 +29,7 @@ To run in google colab:
 !wget https://huggingface.co/camenduru/Arc2Face/resolve/main/scrfd_10g_bnkps.onnx -O /content/MultiArc2Face/models/antelopev2/scrfd_10g_bnkps.onnx
 !wget https://huggingface.co/camenduru/Arc2Face/resolve/main/arcface.onnx -O /content/MultiArc2Face/models/antelopev2/arcface.onnx
 
-!pip install -q diffusers==0.22.0 transformers==4.34.1 accelerate onnxruntime-gpu gradio insightface
+!pip install -r requirements.txt
 
 !python app.py
 ```
