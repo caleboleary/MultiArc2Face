@@ -1,20 +1,10 @@
----
-title: Arc2Face
-emoji: 🔥
-colorFrom: yellow
-colorTo: purple
-sdk: gradio
-sdk_version: 4.23.0
-app_file: app.py
-pinned: false
-license: mit
----
+Originally forked from [this](https://github.com/camenduru/Arc2Face-hf), thanks camenduru!
 
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+# MultiArc2Face
 
+This repo builds upon the work done to train the [Arc2Face](https://github.com/foivospar/Arc2Face) model by foivospar.
 
-
-
+Specifically, this epxlores getting the embeddings of multiple of the same face and averaging them in different ways to gain more, and hopefully more correct, information about the face one is trying to reproduce with the Arc2Face model.
 
 To run in google colab:
 
@@ -33,3 +23,7 @@ To run in google colab:
 
 !python app.py
 ```
+
+Sample using median option, non-cherry picked
+
+![sample of different face counts](assets.sample.png)
