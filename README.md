@@ -20,6 +20,7 @@ To run in google colab:
 !wget https://huggingface.co/camenduru/Arc2Face/resolve/main/arcface.onnx -O /content/MultiArc2Face/models/antelopev2/arcface.onnx
 
 !pip install -r requirements.txt
+!pip install gradio==4.25.0
 
 !python app.py
 ```
