@@ -20,6 +20,8 @@ import numpy as np
 import random
 import os
 import datetime
+import hashlib
+import json
 
 import logging
 
@@ -43,6 +45,15 @@ def save_embeddings_to_csv(embeddings, filename):
         for embedding in embeddings:
             writer.writerow(embedding.tolist())
 
+def generate_image_set_hash(image_paths, average_method, n_outliers):
+    # Sort the paths to ensure consistent hashing
+    sorted_paths = sorted([img[0] for img in image_paths if img is not None])
+    # Join all paths into a single string
+    paths_string = "".join(sorted_paths)
+    # Add the average method and n_outliers to the string
+    paths_string += f"_{average_method}_{n_outliers}"
+    # Create a hash of the string
+    return hashlib.md5(paths_string.encode()).hexdigest()
 
 import gradio as gr
 
@@ -333,33 +344,47 @@ def create_face_mask(image):
 
 def generate_image(initial_image_path, image_paths, num_steps, guidance_scale, seed, num_images, average_method, n_outliers, negative_prompt, stren, face_only, progress=gr.Progress(track_tqdm=True)):
 
-    all_embeddings = []
-    for image_data in image_paths:
-        if image_data is None:
-            continue
+    # Generate a hash for the current set of images, including average method and n_outliers
+    image_set_hash = generate_image_set_hash(image_paths, average_method, n_outliers)
+    cache_file = f"./cache/{image_set_hash}.pt"
+
+    # Check if we have a cached embedding
+    if os.path.exists(cache_file):
+        logging.info(f"Loading cached embedding for image set {image_set_hash}")
+        avg_embedding = torch.load(cache_file)
+    else:
+        all_embeddings = []
+        for image_data in image_paths:
+            if image_data is None:
+                continue
+            
+            image_path_or_data = image_data[0]
+
+            # Open the image using PIL and ensure it is in RGB format
+            img = Image.open(image_path_or_data).convert('RGB')
+            img = np.array(img)[:, :, ::-1]  # Convert to BGR format if necessary for your model
+
+            faces = app.get(img)
+            
+            if len(faces) > 0:
+                embeddings = [torch.tensor(face['embedding'], dtype=dtype).to(device) for face in faces]
+                all_embeddings.extend(embeddings)
+
+        if len(all_embeddings) == 0:
+            raise gr.Error("No faces detected in the uploaded images. Please upload different images.")
+
+        all_embeddings = remove_outliers(all_embeddings, n_outliers)
+        avg_embedding = average_embeddings(all_embeddings, method=average_method)
         
-        image_path_or_data = image_data[0]
+        # Normalize the averaged embedding
+        avg_embedding = avg_embedding / torch.norm(avg_embedding, dim=0, keepdim=True)
+        avg_embedding = avg_embedding.unsqueeze(0)  # Ensure it has the batch dimension
 
-        # Open the image using PIL and ensure it is in RGB format
-        img = Image.open(image_path_or_data).convert('RGB')
-        img = np.array(img)[:, :, ::-1]  # Convert to BGR format if necessary for your model
+        # Cache the embedding
+        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        torch.save(avg_embedding, cache_file)
+        logging.info(f"Cached embedding for image set {image_set_hash}")
 
-        faces = app.get(img)
-        
-        if len(faces) > 0:
-            embeddings = [torch.tensor(face['embedding'], dtype=dtype).to(device) for face in faces]
-            all_embeddings.extend(embeddings)
-
-
-    if len(all_embeddings) == 0:
-        raise gr.Error("No faces detected in the uploaded images. Please upload different images.")
-
-    all_embeddings = remove_outliers(all_embeddings, n_outliers)
-    avg_embedding = average_embeddings(all_embeddings, method=average_method)
-    
-    # Normalize the averaged embedding
-    avg_embedding = avg_embedding / torch.norm(avg_embedding, dim=0, keepdim=True)
-    avg_embedding = avg_embedding.unsqueeze(0)  # Ensure it has the batch dimension
     id_emb = project_face_embs(pipeline, avg_embedding)
                     
     generator = torch.Generator(device=device).manual_seed(seed)
